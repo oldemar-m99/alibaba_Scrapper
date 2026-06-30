@@ -4,49 +4,72 @@
 
 ```mermaid
 flowchart TD
-    A([Inicio: python sourcing_tool.py]) --> B{API_KEY valida?}
-    B -- No --> Z1([Error: configura API_KEY en config.py]):::err
-    B -- Si --> C[ETAPA 1: recolectar_urls<br/><i>search.py</i>]
+    A([Inicio: python sourcing_tool.py])
+    B{API_KEY valida?}
+    Z1([Error: configura API_KEY en config.py])
+    C["ETAPA 1: recolectar_urls (search.py)"]
+    D{Existe cache urls_encontradas.txt?}
+    E[Reusar URLs del cache]
+    F[Loop de paginas de busqueda]
+    G["fetch pagina (proxy.py - ScraperAPI)"]
+    H[extraer_links_de_busqueda - BeautifulSoup]
+    I{Suficientes URLs o sin resultados?}
+    J[Guardar cache de URLs]
+    K{Hay URLs?}
+    Z2([Salir: sin resultados])
+    L["ETAPA 2: etapa2_extraer (sourcing_tool.py)"]
+    M["cargar_urls_ya_procesadas (storage.py)"]
+    N{Para cada URL}
+    O{Ya esta en el CSV?}
+    P["fetch producto (proxy.py)"]
+    Q{Descarga OK?}
+    R["parsear_producto (extractor.py): HTML to datos"]
+    S["escritor.agregar (storage.py): append + flush"]
+    T([CSV listo: reporte_sourcing_alibaba.csv])
 
-    C --> D{Existe cache<br/>urls_encontradas.txt?}
-    D -- Si --> E[Reusar URLs del cache]
-    D -- No --> F[Loop de paginas de busqueda]
-    F --> G[fetch pagina<br/><i>proxy.py - ScraperAPI</i>]
-    G --> H[extraer_links_de_busqueda<br/>BeautifulSoup]
-    H --> I{Suficientes URLs<br/>o sin resultados?}
+    A --> B
+    B -- No --> Z1
+    B -- Si --> C
+    C --> D
+    D -- Si --> E
+    D -- No --> F
+    F --> G
+    G --> H
+    H --> I
     I -- No --> F
-    I -- Si --> J[Guardar cache de URLs]
+    I -- Si --> J
     E --> K
-    J --> K{Hay URLs?}
-    K -- No --> Z2([Salir: sin resultados]):::err
-
-    K -- Si --> L[ETAPA 2: etapa2_extraer<br/><i>sourcing_tool.py</i>]
-    L --> M[cargar_urls_ya_procesadas<br/><i>storage.py</i> - reanudar]
-    M --> N{Para cada URL}
-    N --> O{Ya esta<br/>en el CSV?}
+    J --> K
+    K -- No --> Z2
+    K -- Si --> L
+    L --> M
+    M --> N
+    N --> O
     O -- Si --> N
-    O -- No --> P[fetch producto<br/><i>proxy.py</i>]
-    P --> Q{Descarga OK?}
+    O -- No --> P
+    P --> Q
     Q -- No --> N
-    Q -- Si --> R[parsear_producto<br/><i>extractor.py</i><br/>HTML to datos]
-    R --> S[escritor.agregar<br/><i>storage.py</i> - append + flush]
+    Q -- Si --> R
+    R --> S
     S --> N
-    N -- Fin del loop --> T([CSV listo:<br/>reporte_sourcing_alibaba.csv]):::ok
+    N -- Fin del loop --> T
 
     classDef err fill:#ffd6d6,stroke:#c00;
     classDef ok fill:#d6ffd6,stroke:#0a0;
+    class Z1,Z2 err;
+    class T ok;
 ```
 
 ## 2) Dependencias entre modulos (quien usa a quien)
 
 ```mermaid
 flowchart LR
-    MAIN[sourcing_tool.py<br/><b>orquestador</b>]
-    CFG[config.py<br/>configuracion]
-    PRX[proxy.py<br/>red / ScraperAPI]
-    SRCH[search.py<br/>ETAPA 1: URLs]
-    EXT[extractor.py<br/>HTML to datos]
-    STO[storage.py<br/>CSV]
+    MAIN["sourcing_tool.py (orquestador)"]
+    CFG["config.py - configuracion"]
+    PRX["proxy.py - red / ScraperAPI"]
+    SRCH["search.py - ETAPA 1: URLs"]
+    EXT["extractor.py - HTML to datos"]
+    STO["storage.py - CSV"]
 
     MAIN --> SRCH
     MAIN --> EXT
