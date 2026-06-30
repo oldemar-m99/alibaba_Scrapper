@@ -1,0 +1,20 @@
+# Salidas generadas por la herramienta (no subir datos)
+reporte_sourcing_alibaba.csv
+urls_encontradas.txt
+*.csv
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Editor / SO
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Notas locales
+proyecto.txt
