@@ -1,41 +1,59 @@
 # Alibaba Sourcing Tool
 
-Herramienta de sourcing que busca productos en **Alibaba.com** a través de
-**ScraperAPI** (proxy que resuelve bloqueos y CAPTCHAs en la nube) y exporta
-un reporte CSV con **título, proveedor, MOQ y precio**.
+Herramienta de sourcing que extrae proveedores de **Alibaba.com** a través de
+**ScraperAPI** (proxy con IPs rotativas que resuelve bloqueos) y exporta un
+reporte Excel con datos ya filtrados y **alineados por producto**.
 
-Diseño **modular (SRP)**: cada archivo tiene una única responsabilidad y la
-escritura del CSV es incremental (bajo uso de RAM y se puede reanudar).
+Pensada para comprador de e-commerce / Amazon FBA: aplica los filtros de calidad
+**en la propia URL de Alibaba** (Verified Supplier + Trade Assurance + certificación
+CPC + rating), así cada página trae candidatos pre-cualificados.
 
-## Módulos
+## La clave técnica: de dónde salen los datos
+
+Alibaba **incrusta en el HTML** un objeto JavaScript (`__page__data_sse10`) con la
+lista completa de productos ya estructurada. En vez de raspar el HTML visible
+(frágil y desalineado), leemos ese objeto:
+
+```
+window.__page__data_sse10 -> _offer_list -> offerResultData -> offers[]
+```
+
+Cada `offer` es un objeto cerrado con todos sus campos (URL, proveedor, años,
+rating, reviews, MOQ, precio…), por lo que **la alineación es exacta**. Como el
+objeto viene como texto en el HTML, ScraperAPI lo obtiene **sin renderizar JS**.
+
+## Módulos (arquitectura modular / SRP)
 
 | Archivo | Responsabilidad |
 |---|---|
-| `config.py` | Configuración central (API key, keyword, opciones). |
-| `proxy.py` | Descargas vía ScraperAPI (red). |
-| `search.py` | ETAPA 1: recolectar URLs de productos. |
-| `extractor.py` | Transformar HTML → datos del producto. |
-| `storage.py` | Persistencia en CSV. |
+| `config.py` | Configuración: keyword, filtros, ajustes ScraperAPI. *(No se sube: tiene la API Key. Ver `config.example.py`)* |
+| `search.py` | Construye la URL filtrada de la interfaz clásica + paginación. |
+| `proxy.py` | Descarga vía ScraperAPI con reintentos anti-CAPTCHA. |
+| `extractor.py` | Parsea el objeto `__page__data_sse10` → lista de productos. |
+| `storage.py` | Persistencia CSV incremental (reanudable). |
 | `sourcing_tool.py` | Punto de entrada: orquesta todo. |
+| `build_xlsx.py` | Genera el reporte Excel ordenado. |
 
 ## Instalación
 
 ```bash
-pip install requests beautifulsoup4 pandas
+pip install requests beautifulsoup4 pandas openpyxl
 ```
 
 ## Uso
 
-1. Edita `config.py`: pon tu `API_KEY` de ScraperAPI y tu `KEYWORD`.
-2. Ejecuta:
+1. Copia `config.example.py` a `config.py` y pon tu `API_KEY` de ScraperAPI.
+2. Ajusta `KEYWORD`, `FILTROS` y `MAX_PAGES`.
+3. Ejecuta:
 
 ```bash
-python sourcing_tool.py
+python sourcing_tool.py      # extrae -> reporte_sourcing_alibaba.csv
+python build_xlsx.py         # genera -> proveedores_squishy.xlsx
 ```
 
-3. Se genera `reporte_sourcing_alibaba.csv` (abrible en Excel).
-
-> Empieza con `MAX_PRODUCTS = 20` para validar antes de lanzar los 1000.
+Columnas del reporte: `URL · Producto · Proveedor · País · Años · Rating ·
+Reviews · Service · Shipping · Precio · MOQ`, ordenadas por
+**# reviews → años verificado → service score → precio mínimo**.
 
 ---
 
@@ -46,57 +64,42 @@ flowchart TD
     A([Inicio: python sourcing_tool.py])
     B{API_KEY valida?}
     Z1([Error: configura API_KEY en config.py])
-    C["ETAPA 1: recolectar_urls (search.py)"]
-    D{Existe cache urls_encontradas.txt?}
-    E[Reusar URLs del cache]
-    F[Loop de paginas de busqueda]
-    G["fetch pagina (proxy.py - ScraperAPI)"]
-    H[extraer_links_de_busqueda - BeautifulSoup]
-    I{Suficientes URLs o sin resultados?}
-    J[Guardar cache de URLs]
-    K{Hay URLs?}
-    Z2([Salir: sin resultados])
-    L["ETAPA 2: etapa2_extraer (sourcing_tool.py)"]
-    M["cargar_urls_ya_procesadas (storage.py)"]
-    N{Para cada URL}
-    O{Ya esta en el CSV?}
-    P["fetch producto (proxy.py)"]
-    Q{Descarga OK?}
-    R["parsear_producto (extractor.py): HTML to datos"]
-    S["escritor.agregar (storage.py): append + flush"]
-    T([CSV listo: reporte_sourcing_alibaba.csv])
+    C["Para cada pagina 1..MAX_PAGES"]
+    D["construir_url (search.py): URL filtrada + page=N"]
+    E["fetch (proxy.py): ScraperAPI premium, sin render"]
+    F{Pagina buena o CAPTCHA?}
+    G["reintentar (hasta MAX_CAPTCHA_RETRIES)"]
+    H["parsear_resultados (extractor.py)"]
+    I["Localiza bloque __page__data_sse10 en el HTML"]
+    J["JSON.parse -> offerResultData.offers[]"]
+    K["Mapear cada offer -> fila (url, proveedor, MOQ...)"]
+    L["storage.py: append incremental al CSV"]
+    M([reporte_sourcing_alibaba.csv])
+    N["build_xlsx.py: ordenar + Excel"]
+    O([proveedores_squishy.xlsx])
 
     A --> B
     B -- No --> Z1
     B -- Si --> C
     C --> D
-    D -- Si --> E
-    D -- No --> F
-    F --> G
-    G --> H
+    D --> E
+    E --> F
+    F -- CAPTCHA --> G
+    G --> E
+    F -- Buena --> H
     H --> I
-    I -- No --> F
-    I -- Si --> J
-    E --> K
+    I --> J
     J --> K
-    K -- No --> Z2
-    K -- Si --> L
-    L --> M
+    K --> L
+    L --> C
+    C -- Fin --> M
     M --> N
     N --> O
-    O -- Si --> N
-    O -- No --> P
-    P --> Q
-    Q -- No --> N
-    Q -- Si --> R
-    R --> S
-    S --> N
-    N -- Fin del loop --> T
 
     classDef err fill:#ffd6d6,stroke:#c00;
     classDef ok fill:#d6ffd6,stroke:#0a0;
-    class Z1,Z2 err;
-    class T ok;
+    class Z1 err;
+    class M,O ok;
 ```
 
 ## Dependencias entre módulos
@@ -104,28 +107,36 @@ flowchart TD
 ```mermaid
 flowchart LR
     MAIN["sourcing_tool.py (orquestador)"]
-    CFG["config.py - configuracion"]
-    PRX["proxy.py - red / ScraperAPI"]
-    SRCH["search.py - ETAPA 1: URLs"]
-    EXT["extractor.py - HTML to datos"]
+    CFG["config.py - keyword + filtros + API"]
+    SRCH["search.py - URL filtrada"]
+    PRX["proxy.py - ScraperAPI + anti-CAPTCHA"]
+    EXT["extractor.py - __page__data_sse10"]
     STO["storage.py - CSV"]
+    XLS["build_xlsx.py - reporte Excel"]
 
     MAIN --> SRCH
+    MAIN --> PRX
     MAIN --> EXT
     MAIN --> STO
-    MAIN --> PRX
-    SRCH --> PRX
     SRCH --> CFG
     PRX --> CFG
     STO --> CFG
     MAIN --> CFG
+    XLS --> STO
 
     style CFG fill:#fff3c4,stroke:#caa800
     style MAIN fill:#cfe3ff,stroke:#3678d8
 ```
 
-## Aviso sobre créditos
+## Notas
 
-Alibaba requiere `render=true` (JS), por lo que cada producto puede costar
-~10 créditos en ScraperAPI. 1000 productos ≈ 10 000 créditos (más que el plan
-gratuito de 5000). Haz pruebas pequeñas y revisa el consumo en tu panel.
+- **Filtros en la URL** (interfaz clásica `/trade/search`): `assessmentCompany=true`
+  (Verified), `ta=y` (Trade Assurance), `productAuthTag=CPC`, `reviewScore=4`,
+  `sortType=prodSold180` (más vendidos).
+- **Sin `pageSize`**: se deja el default (~48/pág) para que la paginación no
+  se salte productos (el SSR sólo "hornea" ~63 aunque pidas 100).
+- **Créditos**: Alibaba es dominio protegido → requiere `premium`. El plan gratis
+  **no** permite `ultra_premium`. Cada página buena ≈ 1 petición premium (+ los
+  reintentos si aparece CAPTCHA).
+- **Datos de la ficha** (fábrica vs trader, OEM, lead time, response rate) no están
+  en resultados; requieren abrir cada producto. Úsalo sólo para tus finalistas.

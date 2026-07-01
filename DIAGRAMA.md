@@ -1,89 +1,97 @@
-# Diagrama de flujo — Sourcing Tool (arquitectura modular SRP)
+# Diagrama de flujo — Sourcing Tool (ScraperAPI + `__page__data_sse10`)
 
-## 1) Flujo de ejecución (qué pasa al correr `python sourcing_tool.py`)
+## 1) Flujo de ejecución
 
 ```mermaid
 flowchart TD
     A([Inicio: python sourcing_tool.py])
     B{API_KEY valida?}
     Z1([Error: configura API_KEY en config.py])
-    C["ETAPA 1: recolectar_urls (search.py)"]
-    D{Existe cache urls_encontradas.txt?}
-    E[Reusar URLs del cache]
-    F[Loop de paginas de busqueda]
-    G["fetch pagina (proxy.py - ScraperAPI)"]
-    H[extraer_links_de_busqueda - BeautifulSoup]
-    I{Suficientes URLs o sin resultados?}
-    J[Guardar cache de URLs]
-    K{Hay URLs?}
-    Z2([Salir: sin resultados])
-    L["ETAPA 2: etapa2_extraer (sourcing_tool.py)"]
-    M["cargar_urls_ya_procesadas (storage.py)"]
-    N{Para cada URL}
-    O{Ya esta en el CSV?}
-    P["fetch producto (proxy.py)"]
-    Q{Descarga OK?}
-    R["parsear_producto (extractor.py): HTML to datos"]
-    S["escritor.agregar (storage.py): append + flush"]
-    T([CSV listo: reporte_sourcing_alibaba.csv])
+    C["Para cada pagina 1..MAX_PAGES"]
+    D["construir_url (search.py): URL filtrada + page=N"]
+    E["fetch (proxy.py): ScraperAPI premium, sin render"]
+    F{Pagina buena o CAPTCHA?}
+    G["reintentar (hasta MAX_CAPTCHA_RETRIES)"]
+    H["parsear_resultados (extractor.py)"]
+    I["Localiza bloque __page__data_sse10 en el HTML"]
+    J["JSON.parse -> offerResultData.offers[]"]
+    K["Mapear cada offer -> fila (url, proveedor, MOQ...)"]
+    L["storage.py: append incremental al CSV"]
+    M([reporte_sourcing_alibaba.csv])
+    N["build_xlsx.py: ordenar + Excel"]
+    O([proveedores_squishy.xlsx])
 
     A --> B
     B -- No --> Z1
     B -- Si --> C
     C --> D
-    D -- Si --> E
-    D -- No --> F
-    F --> G
-    G --> H
+    D --> E
+    E --> F
+    F -- CAPTCHA --> G
+    G --> E
+    F -- Buena --> H
     H --> I
-    I -- No --> F
-    I -- Si --> J
-    E --> K
+    I --> J
     J --> K
-    K -- No --> Z2
-    K -- Si --> L
-    L --> M
+    K --> L
+    L --> C
+    C -- Fin --> M
     M --> N
     N --> O
-    O -- Si --> N
-    O -- No --> P
-    P --> Q
-    Q -- No --> N
-    Q -- Si --> R
-    R --> S
-    S --> N
-    N -- Fin del loop --> T
 
     classDef err fill:#ffd6d6,stroke:#c00;
     classDef ok fill:#d6ffd6,stroke:#0a0;
-    class Z1,Z2 err;
-    class T ok;
+    class Z1 err;
+    class M,O ok;
 ```
 
-## 2) Dependencias entre modulos (quien usa a quien)
+## 2) De dónde salen los datos (capas de la página)
+
+```mermaid
+flowchart TD
+    SRV["Servidor Alibaba"]
+    HTML["HTML crudo (lo que recibe ScraperAPI)"]
+    SSE["Bloque de texto: __page__data_sse10 = { ... }"]
+    OBJ["_offer_list.offerResultData.offers[]"]
+    OFF["offer[i] = objeto cerrado por producto"]
+    FILA["fila del CSV (alineada)"]
+
+    SRV --> HTML
+    HTML --> SSE
+    SSE -->|JSON.parse| OBJ
+    OBJ --> OFF
+    OFF -->|url, company, years, reviews, moq, price| FILA
+
+    style SSE fill:#fff3c4,stroke:#caa800
+    style OFF fill:#cfe3ff,stroke:#3678d8
+```
+
+> El objeto viene **incrustado como texto** en el HTML, así que ScraperAPI lo
+> obtiene **sin renderizar JavaScript**. Cada `offer` es un objeto completo →
+> alineación exacta (no se cruzan URL / proveedor / métricas).
+
+## 3) Dependencias entre módulos
 
 ```mermaid
 flowchart LR
     MAIN["sourcing_tool.py (orquestador)"]
-    CFG["config.py - configuracion"]
-    PRX["proxy.py - red / ScraperAPI"]
-    SRCH["search.py - ETAPA 1: URLs"]
-    EXT["extractor.py - HTML to datos"]
+    CFG["config.py - keyword + filtros + API"]
+    SRCH["search.py - URL filtrada"]
+    PRX["proxy.py - ScraperAPI + anti-CAPTCHA"]
+    EXT["extractor.py - __page__data_sse10"]
     STO["storage.py - CSV"]
+    XLS["build_xlsx.py - reporte Excel"]
 
     MAIN --> SRCH
+    MAIN --> PRX
     MAIN --> EXT
     MAIN --> STO
-    MAIN --> PRX
-    SRCH --> PRX
     SRCH --> CFG
     PRX --> CFG
     STO --> CFG
     MAIN --> CFG
+    XLS --> STO
 
     style CFG fill:#fff3c4,stroke:#caa800
     style MAIN fill:#cfe3ff,stroke:#3678d8
 ```
-
-> Nota: `extractor.py` NO depende de nada propio (solo de BeautifulSoup).
-> Por eso es el modulo mas facil de probar de forma aislada.
