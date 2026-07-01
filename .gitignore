@@ -1,7 +1,17 @@
+# SECRETO: config.py tiene la API Key real -> NO subir (usar config.example.py)
+config.py
+
 # Salidas generadas por la herramienta (no subir datos)
 reporte_sourcing_alibaba.csv
 urls_encontradas.txt
 *.csv
+*.xlsx
+*.html
+
+# Archivos de trabajo/depuracion
+scratch_*.py
+debug_*.html
+urls_*.txt
 
 # Python
 __pycache__/

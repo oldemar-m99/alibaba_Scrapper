@@ -2,17 +2,15 @@
 """
 sourcing_tool.py  (PUNTO DE ENTRADA)
 ------------------------------------
-Orquesta la herramienta de sourcing de Alibaba. No contiene logica de
-detalle: solo coordina los modulos.
+Orquesta la extraccion de proveedores de Alibaba via ScraperAPI.
 
-    config.py     -> configuracion
-    proxy.py      -> descargas via ScraperAPI
-    search.py     -> ETAPA 1: recolectar URLs
-    extractor.py  -> HTML -> datos de producto
-    storage.py    -> guardar en CSV
+    config.py     -> configuracion y filtros
+    search.py     -> construye la URL filtrada + paginacion
+    proxy.py      -> descarga via ScraperAPI (reintentos + anti-CAPTCHA)
+    extractor.py  -> HTML -> lista de productos (objeto __page__data_sse10)
+    storage.py    -> guarda en CSV
 
 Uso:
-    pip install requests beautifulsoup4 pandas
     python sourcing_tool.py
 """
 
@@ -20,51 +18,50 @@ import sys
 import time
 
 import config
+from search import construir_url
 from proxy import fetch
-from search import recolectar_urls
-from extractor import parsear_producto
+from extractor import parsear_resultados
 from storage import cargar_urls_ya_procesadas, EscritorCSV
-
-
-def etapa2_extraer(urls):
-    """ETAPA 2: descarga cada producto, lo parsea y lo guarda."""
-    ya_procesadas = cargar_urls_ya_procesadas()
-    if ya_procesadas:
-        print(f"[ETAPA 2] Reanudando: {len(ya_procesadas)} productos ya estaban en el CSV.")
-
-    total = len(urls)
-    with EscritorCSV() as escritor:
-        for i, url in enumerate(urls, 1):
-            if url in ya_procesadas:
-                continue
-            print(f"[ETAPA 2] ({i}/{total}) {url[:80]}")
-            html = fetch(url)
-            if not html:
-                print("    [aviso] no se pudo descargar; lo salto.")
-                continue
-            datos = parsear_producto(html, url)
-            escritor.agregar(datos)
-            print(f"    OK -> proveedor='{datos['proveedor'][:40]}' | moq='{datos['moq']}'")
-            time.sleep(config.PAUSE_BETWEEN_REQUESTS)
-
-    print(f"\n[LISTO] Reporte guardado en '{config.CSV_FILE}'.")
 
 
 def main():
     if config.API_KEY == "TU_API_KEY_DE_SCRAPERAPI" or not config.API_KEY:
-        print("ERROR: Pon tu API Key real de ScraperAPI en config.py (variable API_KEY).")
+        print("ERROR: Pon tu API Key real de ScraperAPI en config.py.")
         sys.exit(1)
 
-    print("=" * 60)
-    print(f"Sourcing Alibaba | keyword='{config.KEYWORD}' | objetivo={config.MAX_PRODUCTS}")
-    print("=" * 60)
+    print("=" * 62)
+    print(f"Sourcing Alibaba | keyword='{config.KEYWORD}' | paginas={config.MAX_PAGES}")
+    print(f"Filtros: {config.FILTROS}")
+    print("=" * 62)
 
-    urls = recolectar_urls()                 # ETAPA 1
-    if not urls:
-        print("No se encontraron URLs. Revisa el KEYWORD o prueba USE_ULTRA_PREMIUM=True.")
-        sys.exit(1)
+    ya = cargar_urls_ya_procesadas()
+    if ya:
+        print(f"[info] {len(ya)} productos ya estaban en el CSV (se omiten).")
 
-    etapa2_extraer(urls)                      # ETAPA 2
+    total_nuevos = 0
+    with EscritorCSV() as escritor:
+        for page in range(config.START_PAGE, config.START_PAGE + config.MAX_PAGES):
+            url = construir_url(config.KEYWORD, page)
+            print(f"\n[PAGINA {page}] descargando via ScraperAPI...")
+            html = fetch(url)
+            if not html:
+                print("   [error] no se logro pagina buena (CAPTCHA persistente).")
+                continue
+
+            filas = parsear_resultados(html)
+            print(f"   [ok] {len(filas)} productos extraidos del objeto de datos.")
+            nuevos = 0
+            for f in filas:
+                if f["url"] in ya:
+                    continue
+                ya.add(f["url"])
+                escritor.agregar(f)
+                nuevos += 1
+            total_nuevos += nuevos
+            print(f"   [guardado] {nuevos} nuevos (resto ya estaban).")
+            time.sleep(config.PAUSE_BETWEEN_REQUESTS)
+
+    print(f"\n[LISTO] {total_nuevos} productos nuevos en '{config.CSV_FILE}'.")
 
 
 if __name__ == "__main__":

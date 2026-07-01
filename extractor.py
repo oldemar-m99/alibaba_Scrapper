@@ -2,76 +2,125 @@
 """
 extractor.py
 ------------
-Responsabilidad UNICA: convertir el HTML de una pagina de producto en un
-diccionario de datos (titulo, proveedor, moq, precio, url).
+Responsabilidad UNICA: convertir el HTML de una pagina de resultados en una
+lista de productos (dicts), leyendo el objeto de datos '__page__data_sse10'
+que Alibaba incrusta en el HTML (mismo objeto que en el navegador).
+
 No hace red ni escribe archivos: solo transforma HTML -> datos.
 """
 
 import re
-from bs4 import BeautifulSoup
+import json
+
+ANCLA = "__page__data_sse"
 
 
-def _texto(soup, selectores):
-    """Devuelve el texto del primer selector que tenga contenido."""
-    for sel in selectores:
-        el = soup.select_one(sel)
-        if el and el.get_text(strip=True):
-            return el.get_text(strip=True)
-    return ""
+def _limpiar(s):
+    if s is None:
+        return ""
+    s = str(s)
+    s = re.sub(r"<[^>]+>", "", s)          # quitar tags HTML (<strong> etc.)
+    s = s.replace("\\/", "/")
+    return re.sub(r"\s+", " ", s).strip()
 
 
-def parsear_producto(html, url):
-    soup = BeautifulSoup(html, "html.parser")
-    datos = {"titulo": "", "proveedor": "", "moq": "", "precio": "", "url": url}
+def _texto(v):
+    """Devuelve texto util de un valor que puede ser str, num o dict."""
+    if v is None:
+        return ""
+    if isinstance(v, dict):
+        for k in ("text", "value", "display", "name"):
+            if v.get(k):
+                return _limpiar(v[k])
+        return ""
+    return _limpiar(v)
 
-    # --- Titulo ---
-    datos["titulo"] = _texto(soup, [
-        "h1.product-title", "h1[class*='title']", "h1", "div[class*='product-title']",
-    ])
-    if not datos["titulo"]:
-        og = soup.find("meta", property="og:title")
-        if og and og.get("content"):
-            datos["titulo"] = og["content"].strip()
 
-    # --- Proveedor ---
-    datos["proveedor"] = _texto(soup, [
-        "a[class*='company-name']", "div[class*='company-name']",
-        "a[class*='supplier']", "span[class*='company']",
-    ])
+def _es_lista_ofertas(lst):
+    return (isinstance(lst, list) and lst and isinstance(lst[0], dict) and
+            ("productUrl" in lst[0] or "productId" in lst[0] or "detailUrl" in lst[0]) and
+            ("companyName" in lst[0] or "reviewScore" in lst[0] or "originalMinPrice" in lst[0]))
 
-    # --- Precio ---
-    datos["precio"] = _texto(soup, [
-        "div[class*='price'] span", "span[class*='price']", "div[class*='price']",
-    ])
 
-    # --- MOQ (Minimum Order Quantity) ---
-    texto_pagina = soup.get_text(" ", strip=True)
-    m = re.search(
-        r"(\d[\d,]*)\s*(?:pieces?|pcs|sets?|units?|unidades|piezas)\b.*?min",
-        texto_pagina, re.I,
-    )
-    if not m:
-        m = re.search(
-            r"min(?:imum)?\.?\s*order[^0-9]{0,20}(\d[\d,]*\s*\w+)",
-            texto_pagina, re.I,
-        )
-    if m:
-        datos["moq"] = m.group(1) if m.lastindex else m.group(0)
+def _todas_las_listas(obj, acc):
+    """Recolecta todas las listas de ofertas del objeto."""
+    if isinstance(obj, list):
+        if _es_lista_ofertas(obj):
+            acc.append(obj)
+        for it in obj:
+            _todas_las_listas(it, acc)
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            _todas_las_listas(v, acc)
 
-    # --- Respaldo: JSON embebido en <script> ---
-    if not datos["proveedor"] or not datos["titulo"]:
-        for script in soup.find_all("script"):
-            txt = script.string or ""
-            if "companyName" in txt or "minOrderQuantity" in txt:
-                cm = re.search(r'"companyName"\s*:\s*"([^"]+)"', txt)
-                if cm and not datos["proveedor"]:
-                    datos["proveedor"] = cm.group(1)
-                mm = re.search(r'"minOrderQuantity"\s*:\s*"?([^",}]+)', txt)
-                if mm and not datos["moq"]:
-                    datos["moq"] = mm.group(1).strip()
-                tm = re.search(r'"subject"\s*:\s*"([^"]+)"', txt)
-                if tm and not datos["titulo"]:
-                    datos["titulo"] = tm.group(1)
-                break
 
-    return datos
+def _buscar_offers(obj):
+    """Devuelve la lista de ofertas MAS GRANDE (los resultados principales,
+    no los mini-booth de 7 items)."""
+    acc = []
+    _todas_las_listas(obj, acc)
+    return max(acc, key=len) if acc else None
+
+
+def _extraer_objeto_datos(html):
+    """Recorre todos los bloques '__page__data_sse' del HTML y devuelve la
+    lista de ofertas mas grande encontrada en cualquiera de ellos."""
+    dec = json.JSONDecoder()
+    mejor = None
+    for m in re.finditer(ANCLA, html):
+        i = html.find("{", m.end())
+        if i == -1:
+            continue
+        try:
+            obj, _ = dec.raw_decode(html, i)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        offers = _buscar_offers(obj)
+        if offers and (mejor is None or len(offers) > len(mejor)):
+            mejor = offers
+    return mejor
+
+
+def _precio(v):
+    s = _texto(v)
+    for junk in ("PAB", " ", "US$", "$"):
+        s = s.replace(junk, "")
+    return s.strip()
+
+
+def parsear_resultados(html):
+    """HTML de una pagina de resultados -> lista de dicts (una por producto)."""
+    offers = _extraer_objeto_datos(html)
+    if not offers:
+        return []
+
+    filas, vistos = [], set()
+    for o in offers:
+        if not isinstance(o, dict):
+            continue
+        # URL: layout nuevo (productUrl) o viejo (detailUrl)
+        url = o.get("productUrl") or o.get("detailUrl") or ""
+        if url.startswith("//"):
+            url = "https:" + url
+        url = url.split("?")[0]
+        if not url or url in vistos:
+            continue
+        vistos.add(url)
+        # MOQ: nuevo (moq/moqV2) o viejo (minOrderQuality + minOrderUnit)
+        moq = _texto(o.get("moq")) or _texto(o.get("moqV2"))
+        if not moq and o.get("minOrderQuality"):
+            moq = f"{_texto(o.get('minOrderQuality'))} {_texto(o.get('minOrderUnit'))}".strip()
+        filas.append({
+            "url": url,
+            "title": _limpiar(o.get("title"))[:120],
+            "company": _limpiar(o.get("companyName")),
+            "country": _texto(o.get("countryCode")),
+            "years": re.sub(r"\D", "", str(o.get("goldSupplierYears") or o.get("goldYears") or "")),
+            "rating": _texto(o.get("reviewScore")),
+            "reviews": _texto(o.get("reviewCount")),
+            "service": _texto(o.get("supplierServiceScore")),
+            "shipping": _texto(o.get("shippingScore")),
+            "price": _precio(o.get("price") or o.get("originalMinPrice")),
+            "moq": moq,
+        })
+    return filas
