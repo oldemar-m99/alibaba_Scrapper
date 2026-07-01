@@ -110,6 +110,13 @@ def parsear_resultados(html):
         moq = _texto(o.get("moq")) or _texto(o.get("moqV2"))
         if not moq and o.get("minOrderQuality"):
             moq = f"{_texto(o.get('minOrderQuality'))} {_texto(o.get('minOrderUnit'))}".strip()
+        # Imagen principal
+        img = o.get("mainImage") or o.get("imageUrl") or ""
+        if isinstance(img, dict):
+            img = img.get("url") or img.get("imgUrl") or ""
+        img = str(img).replace("\\/", "/")
+        if img.startswith("//"):
+            img = "https:" + img
         filas.append({
             "url": url,
             "title": _limpiar(o.get("title"))[:120],
@@ -122,5 +129,6 @@ def parsear_resultados(html):
             "shipping": _texto(o.get("shippingScore")),
             "price": _precio(o.get("price") or o.get("originalMinPrice")),
             "moq": moq,
+            "image": img,
         })
     return filas

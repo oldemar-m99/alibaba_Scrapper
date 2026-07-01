@@ -28,3 +28,8 @@ Thumbs.db
 
 # Notas locales
 proyecto.txt
+
+# Cache de busquedas de keywords (no subir)
+keywords_cache.json
+amz_search_sample.json
+top10.json
